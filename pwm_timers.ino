@@ -15,20 +15,20 @@
  * 
  */
 
-byte bit = 8; //D13
+byte bit = 32; //D13
 boolean clocl = true; //Флаг Увеличения или уменьшения яркости        
 byte value = 0; //Текущее значение яркости  
 
 ISR (TIMER2_OVF_vect){
-  if (OCR2B>1) PORTD |= bit;
+  if (OCR2B>1) PORTB |= bit;
 }
 ISR (TIMER2_COMPB_vect){
-  PORTD &= ~bit;
+  PORTB &= ~bit;
 }
 
 void setup() {
   OCR2B  = 0x10;
-  DDRD   |= bit;
+  DDRB   |= bit;
   TIMSK2 |= (1<<OCIE2B)|(1<<TOIE2);
 }
 
