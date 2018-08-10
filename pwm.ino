@@ -1,46 +1,104 @@
-const byte PWM_pins[] = {A0, 13};
-#define PWM_count sizeof(PWM_pins)
-volatile byte pwm_value[PWM_count];
-const byte pin_to_port[] = {4,4,4,4,4,4,4,4,2,2,2,2,2,2,3,3,3,3,3,3};
-const byte pin_to_mask[] = { _BV(0), _BV(1), _BV(2), _BV(3), _BV(4), _BV(5), _BV(6), _BV(7),
-_BV(0), _BV(1), _BV(2), _BV(3), _BV(4), _BV(5), _BV(0), _BV(1), _BV(2), _BV(3), _BV(4), _BV(5)};
-const unsigned int port_to_output[] = {0, 0, (unsigned int) &PORTB,
-(unsigned int) &PORTC, (unsigned int) &PORTD};
-byte pwm_counter;
-boolean clocl = true;
-byte value = 0;
+const byte PWM_pins[] = {A0, 5};										//Массив номеров нужных пинов
 
-void portWrite(byte pin, byte val)
-{
-  byte bit = pin_to_mask[pin];
-  volatile byte *out;
-  out = port_to_output[pin_to_port[pin]];
-  byte oldSREG = SREG;
-  cli();
-  val==LOW?*out &= ~bit:*out |= bit;
-  SREG = oldSREG;
+#define PWM_count sizeof(PWM_pins)										//Определение размера массива
+byte pin_timer_pwm = 13;												//Тестовым будет 13 пин
+volatile byte pwm_value [PWM_count];									//Массив значений для каналов
+volatile bool pwm_status[PWM_count];									//Тут храним состояние выводов
+byte pwm_counter;														//Счетчик тактов
+
+/*--- Массивы для определения битов и портов по номеру пина --- */
+const byte pin_to_port[] = {0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,
+							0x00,0x00,0x00,0x00,0x00,0x00,			
+							0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01};	
+const byte pin_to_mask[] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,
+							0x01,0x02,0x04,0x08,0x10,0x20,
+							0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
+const unsigned short port_to_output[] = {&PORTB,&PORTC,&PORTD};
+const unsigned short port_to_mode[]   = {&DDRB, &DDRC, &DDRD};
+/*--- Массивы для определения битов и портов по номеру пина --- */
+
+/*--- Переменные для плавного изменения яркости ---*/
+boolean clocl = true; //Флаг Увеличения или уменьшения яркости				
+byte value = 0;		  //Текущее значение яркости	
+
+
+/*	
+*	            Функция записи сигнала в порт
+*
+*	Нагло спижена из digitalWrite стандартной библиотеки
+*	с небольшими доработками:
+*	- убрано лишнее (то, что давало универсальность)
+*	- добавлена предварительная установка режима пина в output
+*
+*	Все, что касается переменной i и pwm_status - только для того,
+*	чтобы если на пине установено значение, то опять такое же
+*	не устанавливать. (можно убрать эти проверки, если не нужны).
+*/
+
+void portWrite(byte pin, bool val, byte i)
+{ 
+  if (val==pwm_status[i]) return; 			//Если значение уже было установлено - выходим
+  byte bit = pin_to_mask[pin];				//Смотрим по массиву, какой бит у пина
+  volatile byte *reg, *out;					//Просто переменные, в которых будут регистры
+  out = port_to_output[pin_to_port[pin]];	//Смотрим в массиве на каком порту сидит пин, и получаем адрес порта
+  reg = port_to_mode  [pin_to_port[pin]];	//Смотрим в массиве какой регистр у пина для его настроек
+  *reg |= bit;								//Устанавливаем в регистре нужный бит в 1, что бы пин был output				
+  val?*out |= bit:*out &= ~bit;				//В зависимоти от значения, включаем или выключаем бит в порту пина
+  pwm_status[i]=val;						//Запоминаем установленное значение пина
 }
 
+
+/*
+*	Прерывание по таймеру 2 канал B
+*/
 ISR (TIMER2_COMPB_vect){
-  pwm_counter++;
-  for (byte i = 0; i < PWM_count; i++)
-  pwm_counter > pwm_value[i] ? portWrite(PWM_pins[i],LOW):portWrite(PWM_pins[i],HIGH);
+  for (byte i = 0; i < PWM_count; i++) //Пробегаем по всем пинам из массива
+  pwm_counter > pwm_value[i] ? portWrite(PWM_pins[i],0,i):portWrite(PWM_pins[i],1,i); 
+  /*Если значение счетчика тактов превысило значение скважности пина, выключаем сигнал с пина,
+	а если не превысило, то включаем */
+  
+  pwm_counter++;//Инкриментируем счетчик тактов
+  /*Поскольку счетчик имеет тип byte, то его значения будут в пределах 0-255,
+    при превышении он обнулится,так так это byte и больше 255 он быть не может*/
 }
 
 
 void setup() {
-  TCCR2B = 0x00;
-  TCCR2B = 1<<WGM21|1<<CS20;
-  TCCR2B &= ~((1<<CS22)|(1<<CS21)); 
-  OCR2B = 1;
-  TIMSK2 |= (1<<OCIE2B);
+  TCCR2A = 0x00;	//CLC 16MHz
+  TCCR2B = 0x09;	//Переводим счетчик B таймера 2 в режим сброса при совпадении,
+  					//а также выключем делители, чтобы жарило по полной все 16МГц
+
+  TCNT2  = 0x00;	//Регистр сравнения ставим в НОЛЬ, что бы прерывание вызывалось каждый такт
+  TIMSK2 = 0x04;	//Разрешаем прерывание при совпадении канала B таймера 2 с регистром сравнения.
+
+  /*Балуюсь с таймером 0, пытаемся заставить работать ШИМ там где нет, но по принципу где он есть.*/
+  TIMSK0 |= (1<<OCIE0A); //При совпадении с каналом А таймера 0; - тут будем выключать пин
+  TIMSK0 |= (1<<TOIE0);	 //При переполнении	- а тоесть когда счетчик обнуляется будем включать пин
+  /*Это всё тестовое, и как бы не надо*/
 }
 
 void loop() {
-  clocl?value++:value--;
-  if (value==0) clocl = true;
-  if (value==255) clocl = false;
-  pwm_value[0] =255-value;
-  pwm_value[1] =value;
-  delayMicroseconds(500); 
+  clocl?value++:value--;			//Смотрим в какую сторону надо крутить яркость и крутим
+  if (value==0x00) clocl = true;	//Если докрутили до минимума, то дальше будем крутить в плюс
+  if (value==0xFF) clocl = false;	//Если докрутили до максимума,то дальше будем крутить в минус
+  pwm_value[1] =0xFF-value;			//Записали в ПИН значение яркости наоборот
+  pwm_value[0] =0x00+value;			//И тут тоже записали, но нормально
+  timer_pwm(value);					//Это тестовое - записываю в регистр сравнения значение яркости
+  delay(1);							//Ставим паузу, иначе это работает настолько быстро, что светодиод тупо горит.
 }
+
+/* ТЕСТОВОЕ */
+ISR (TIMER0_OVF_vect){				//Счетчик таймера 0 обнулился
+	digitalWrite(pin_timer_pwm,1);	//Включаем тестовый пин
+}
+ISR (TIMER0_COMPA_vect){			//Счетчик дотикал до регистра сравнения
+	digitalWrite(pin_timer_pwm,1);	//Выключаем тестовый пин
+}
+
+//Функция записи значения в регистр сравнения А таймера 0
+void timer_pwm(byte val) {
+	cli(); //Запрещаем прерывания
+	OCR0A = val; //Пишем значение
+	sei();//Разрешаем прерывания
+}
+/* ТЕСТОВОЕ */
